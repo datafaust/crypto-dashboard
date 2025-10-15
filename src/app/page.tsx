@@ -15,11 +15,9 @@ import {
   type LatestPrediction,
 } from '@/lib/api-client';
 
-import TechCard from '@/components/TechCard';
-
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE!;
 
-// --- helpers ---
+// --- helpers & types ---
 function computeMape(
   points: { actual_volume: number | null; predicted_volume: number | null }[],
   lastN = 60
@@ -36,6 +34,39 @@ function computeMape(
     }
   }
   return n ? (sum / n) * 100 : null;
+}
+
+type LivePayload = {
+  WINDOW_START?: string;       // ISO
+  ACTUAL_VOLUME?: number;
+  PREDICTED_VOLUME?: number;
+  CLOSE?: number | null;
+  VOLUME?: number | null;
+  TRADES?: number | null;
+  MODEL_VERSION?: string;
+};
+
+function defaultOhlcv(symbol: string): LatestOhlcv {
+  return {
+    SYMBOL_VALUE: symbol,
+    WINDOW_START: Date.now(),
+    OPEN: 0,
+    HIGH: 0,
+    LOW: 0,
+    CLOSE: 0,
+    VOLUME: 0,
+    VWAP: 0,
+    TRADES: 0,
+  };
+}
+
+function defaultPrediction(symbol: string): LatestPrediction {
+  return {
+    SYMBOL_VALUE: symbol,
+    WINDOW_START: new Date().toISOString(),
+    PREDICTED_VOLUME: 0,
+    MODEL_VERSION: '',
+  };
 }
 
 export default function Page() {
@@ -92,15 +123,13 @@ export default function Page() {
     () => (symbol ? `${API_BASE}/sse/stream?symbol=${encodeURIComponent(symbol)}` : null),
     [symbol]
   );
-  const live = useEventSource(sseUrl);
+  const live = useEventSource<LivePayload>(sseUrl);
 
   // When SSE arrives, patch the last point and tile values
   useEffect(() => {
     if (!live || !symbol) return;
 
-    // SSE payload fields from your API:
-    // WINDOW_START (string ISO), ACTUAL_VOLUME (number), PREDICTED_VOLUME (number)
-    const timestamp: string | undefined = live.WINDOW_START ? String(live.WINDOW_START) : undefined;
+    const timestamp = live.WINDOW_START ? String(live.WINDOW_START) : undefined;
     const actual = typeof live.ACTUAL_VOLUME === 'number' ? live.ACTUAL_VOLUME : null;
     const predicted = typeof live.PREDICTED_VOLUME === 'number' ? live.PREDICTED_VOLUME : null;
 
@@ -118,35 +147,31 @@ export default function Page() {
 
     // Update tiles if fields are present
     if (live.WINDOW_START && typeof live.CLOSE === 'number') {
-      setLatestOhlcv((prev) => ({
-        ...(prev ?? {
-          SYMBOL_VALUE: symbol,
-          OPEN: 0,
-          HIGH: 0,
-          LOW: 0,
-          VWAP: 0,
-          VOLUME: 0,
-          TRADES: 0,
-        } as any),
-        WINDOW_START: Date.parse(live.WINDOW_START), // convert ISO → epoch ms for LivePanel formatter
-        CLOSE: live.CLOSE,
-        VOLUME: typeof live.VOLUME === 'number' ? live.VOLUME : (prev?.VOLUME ?? 0),
-        TRADES: typeof live.TRADES === 'number' ? live.TRADES : (prev?.TRADES ?? 0),
-      }));
+      setLatestOhlcv((prev) => {
+        const base = prev ?? defaultOhlcv(symbol);
+        return {
+          ...base,
+          WINDOW_START: Date.parse(live.WINDOW_START as string),
+          CLOSE: typeof live.CLOSE === 'number' ? live.CLOSE : base.CLOSE,
+          VOLUME: typeof live.VOLUME === 'number' ? live.VOLUME : base.VOLUME,
+          TRADES: typeof live.TRADES === 'number' ? live.TRADES : base.TRADES,
+        };
+      });
     }
 
     if (typeof live.PREDICTED_VOLUME === 'number' || typeof live.MODEL_VERSION === 'string') {
-      setLatestPred((prev) => ({
-        ...(prev ?? { SYMBOL_VALUE: symbol, WINDOW_START: new Date().toISOString() } as any),
-        PREDICTED_VOLUME:
-          typeof live.PREDICTED_VOLUME === 'number'
-            ? live.PREDICTED_VOLUME
-            : (prev?.PREDICTED_VOLUME ?? 0),
-        MODEL_VERSION:
-          typeof live.MODEL_VERSION === 'string'
-            ? live.MODEL_VERSION
-            : (prev?.MODEL_VERSION ?? ''),
-      }));
+      setLatestPred((prev) => {
+        const base = prev ?? defaultPrediction(symbol);
+        return {
+          ...base,
+          PREDICTED_VOLUME:
+            typeof live.PREDICTED_VOLUME === 'number'
+              ? live.PREDICTED_VOLUME
+              : base.PREDICTED_VOLUME,
+          MODEL_VERSION:
+            typeof live.MODEL_VERSION === 'string' ? live.MODEL_VERSION : base.MODEL_VERSION,
+        };
+      });
     }
   }, [live, symbol]);
 
@@ -202,9 +227,6 @@ export default function Page() {
           predictedColor="#f59e0b"   // amber-500
         />
       </div>
-
-      <TechCard />
-
     </main>
   );
 }
