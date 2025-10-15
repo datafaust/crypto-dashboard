@@ -1,103 +1,210 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import { useEffect, useMemo, useState } from 'react';
+import SymbolSelect from '@/components/SymbolSelect';
+import Chart from '@/components/Chart';
+import LivePanel from '@/components/LivePanel';
+import { useEventSource } from '@/hooks/useEventSource';
+import {
+  fetchSymbols,
+  fetchAlignmentRange,
+  fetchLatestOhlcv,
+  fetchLatestPrediction,
+  type AlignmentResponse,
+  type LatestOhlcv,
+  type LatestPrediction,
+} from '@/lib/api-client';
+
+import TechCard from '@/components/TechCard';
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE!;
+
+// --- helpers ---
+function computeMape(
+  points: { actual_volume: number | null; predicted_volume: number | null }[],
+  lastN = 60
+) {
+  const tail = points.slice(-lastN);
+  let sum = 0;
+  let n = 0;
+  for (const p of tail) {
+    const a = p.actual_volume;
+    const f = p.predicted_volume;
+    if (typeof a === 'number' && a > 0 && typeof f === 'number') {
+      sum += Math.abs((a - f) / a);
+      n++;
+    }
+  }
+  return n ? (sum / n) * 100 : null;
+}
+
+export default function Page() {
+  const [symbols, setSymbols] = useState<string[]>([]);
+  const [symbol, setSymbol] = useState<string | null>(null);
+
+  const [minutes, setMinutes] = useState<number>(120);
+
+  const [chartData, setChartData] = useState<AlignmentResponse['points']>([]);
+  const [latestOhlcv, setLatestOhlcv] = useState<LatestOhlcv | null>(null);
+  const [latestPred, setLatestPred] = useState<LatestPrediction | null>(null);
+
+  // derived metrics
+  const mape60 = computeMape(chartData, 60);
+  const lastTs = chartData.length ? chartData[chartData.length - 1].timestamp : null;
+  const freshnessSec =
+    lastTs ? Math.max(0, Math.round((Date.now() - Date.parse(lastTs)) / 1000)) : null;
+
+  // Load symbols on mount, set default
+  useEffect(() => {
+    (async () => {
+      try {
+        const s = await fetchSymbols();
+        setSymbols(s);
+        setSymbol((prev) => prev ?? (s[0] ?? null));
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+  }, []);
+
+  // When symbol/minutes change: backfill chart + latest tiles
+  useEffect(() => {
+    if (!symbol) return;
+    (async () => {
+      try {
+        const aligned = await fetchAlignmentRange(symbol, minutes);
+        setChartData(aligned.points);
+
+        const [ohlcv, pred] = await Promise.all([
+          fetchLatestOhlcv(symbol),
+          fetchLatestPrediction(symbol),
+        ]);
+        setLatestOhlcv(ohlcv);
+        setLatestPred(pred);
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+  }, [symbol, minutes]);
+
+  // SSE stream (joined OHLCV + prediction per your API)
+  const sseUrl = useMemo(
+    () => (symbol ? `${API_BASE}/sse/stream?symbol=${encodeURIComponent(symbol)}` : null),
+    [symbol]
+  );
+  const live = useEventSource(sseUrl);
+
+  // When SSE arrives, patch the last point and tile values
+  useEffect(() => {
+    if (!live || !symbol) return;
+
+    // SSE payload fields from your API:
+    // WINDOW_START (string ISO), ACTUAL_VOLUME (number), PREDICTED_VOLUME (number)
+    const timestamp: string | undefined = live.WINDOW_START ? String(live.WINDOW_START) : undefined;
+    const actual = typeof live.ACTUAL_VOLUME === 'number' ? live.ACTUAL_VOLUME : null;
+    const predicted = typeof live.PREDICTED_VOLUME === 'number' ? live.PREDICTED_VOLUME : null;
+
+    if (timestamp) {
+      setChartData((prev) => {
+        const next = [...prev];
+        const idx = next.findIndex((p) => p.timestamp === timestamp);
+        const newPoint = { timestamp, actual_volume: actual, predicted_volume: predicted };
+        if (idx >= 0) next[idx] = { ...next[idx], ...newPoint };
+        else next.push(newPoint);
+        if (next.length > 360) next.shift(); // ring buffer
+        return next;
+      });
+    }
+
+    // Update tiles if fields are present
+    if (live.WINDOW_START && typeof live.CLOSE === 'number') {
+      setLatestOhlcv((prev) => ({
+        ...(prev ?? {
+          SYMBOL_VALUE: symbol,
+          OPEN: 0,
+          HIGH: 0,
+          LOW: 0,
+          VWAP: 0,
+          VOLUME: 0,
+          TRADES: 0,
+        } as any),
+        WINDOW_START: Date.parse(live.WINDOW_START), // convert ISO → epoch ms for LivePanel formatter
+        CLOSE: live.CLOSE,
+        VOLUME: typeof live.VOLUME === 'number' ? live.VOLUME : (prev?.VOLUME ?? 0),
+        TRADES: typeof live.TRADES === 'number' ? live.TRADES : (prev?.TRADES ?? 0),
+      }));
+    }
+
+    if (typeof live.PREDICTED_VOLUME === 'number' || typeof live.MODEL_VERSION === 'string') {
+      setLatestPred((prev) => ({
+        ...(prev ?? { SYMBOL_VALUE: symbol, WINDOW_START: new Date().toISOString() } as any),
+        PREDICTED_VOLUME:
+          typeof live.PREDICTED_VOLUME === 'number'
+            ? live.PREDICTED_VOLUME
+            : (prev?.PREDICTED_VOLUME ?? 0),
+        MODEL_VERSION:
+          typeof live.MODEL_VERSION === 'string'
+            ? live.MODEL_VERSION
+            : (prev?.MODEL_VERSION ?? ''),
+      }));
+    }
+  }, [live, symbol]);
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <main className="min-h-screen bg-black text-white p-6 space-y-6">
+      {/* Header with range selector and symbol picker */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h1 className="text-xl font-semibold">Crypto Volume Nowcast</h1>
+        <div className="flex items-center gap-3">
+          <label className="text-sm text-gray-400">Range</label>
+          <select
+            className="rounded-md bg-gray-900 border border-gray-700 px-2 py-1 text-sm"
+            value={minutes}
+            onChange={(e) => setMinutes(parseInt(e.target.value, 10))}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+            <option value={60}>60m</option>
+            <option value={120}>120m</option>
+            <option value={240}>240m</option>
+          </select>
+          <SymbolSelect symbols={symbols} value={symbol} onChange={setSymbol} />
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+      </div>
+
+      <LivePanel latestOhlcv={latestOhlcv} latestPrediction={latestPred} />
+
+      <div className="rounded-xl border border-gray-800 p-4">
+        {/* Status row */}
+        <div className="flex items-center gap-3 text-sm text-gray-400 mb-2">
+          {mape60 !== null && (
+            <span className="rounded-full border border-gray-700 px-2 py-0.5">
+              MAPE (60m): <span className="text-gray-200">{mape60.toFixed(1)}%</span>
+            </span>
+          )}
+          {freshnessSec !== null && (
+            <span
+              className={`rounded-full px-2 py-0.5 border ${
+                freshnessSec <= 5
+                  ? 'border-green-700 text-green-300'
+                  : 'border-yellow-700 text-yellow-300'
+              }`}
+            >
+              Live • {freshnessSec}s behind
+            </span>
+          )}
+        </div>
+
+        <div className="text-sm text-gray-400 mb-2">
+          Actual vs Predicted Volume (last {minutes} mins)
+        </div>
+        <Chart
+          data={chartData}
+          actualColor="#22c55e"      // green-500
+          predictedColor="#f59e0b"   // amber-500
+        />
+      </div>
+
+      <TechCard />
+
+    </main>
   );
 }
