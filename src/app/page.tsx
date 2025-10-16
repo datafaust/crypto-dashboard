@@ -37,7 +37,7 @@ function computeMape(
 }
 
 type LivePayload = {
-  WINDOW_START?: string; // ISO or epoch-ish parseable
+  WINDOW_START?: string | number; // allow ISO string or epoch ms
   ACTUAL_VOLUME?: number;
   PREDICTED_VOLUME?: number;
   CLOSE?: number | null;
@@ -70,8 +70,19 @@ function defaultPrediction(symbol: string): LatestPrediction {
 }
 
 // Normalize any incoming timestamp to the exact minute ISO string
-function normalizeMinute(ts: string | number | Date): string {
-  const ms = typeof ts === 'string' || typeof ts === 'number' ? Date.parse(ts) : ts.getTime();
+type TsLike = string | number | Date;
+function normalizeMinute(ts: TsLike): string {
+  let ms: number;
+  if (ts instanceof Date) {
+    ms = ts.getTime();
+  } else if (typeof ts === 'number') {
+    // assume epoch ms
+    ms = ts;
+  } else {
+    // string only
+    ms = Date.parse(ts);
+  }
+  if (Number.isNaN(ms)) return '';
   const floored = Math.floor(ms / 60000) * 60000;
   return new Date(floored).toISOString(); // e.g. 2025-10-16T14:21:00.000Z
 }
@@ -111,7 +122,7 @@ export default function Page() {
       try {
         const aligned = await fetchAlignmentRange(symbol, minutes);
         // Normalize all backfill timestamps to minute to match SSE
-        const normalized = aligned.points.map(p => ({
+        const normalized = aligned.points.map((p) => ({
           ...p,
           timestamp: normalizeMinute(p.timestamp),
         }));
@@ -193,7 +204,7 @@ export default function Page() {
         const base = prev ?? defaultOhlcv(symbol);
         return {
           ...base,
-          WINDOW_START: Date.parse(live.WINDOW_START as string),
+          WINDOW_START: Date.parse(String(live.WINDOW_START)),
           CLOSE: typeof live.CLOSE === 'number' ? live.CLOSE : base.CLOSE,
           VOLUME: typeof live.VOLUME === 'number' ? live.VOLUME : base.VOLUME,
           TRADES: typeof live.TRADES === 'number' ? live.TRADES : base.TRADES,
