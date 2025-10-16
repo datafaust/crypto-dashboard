@@ -37,7 +37,7 @@ function computeMape(
 }
 
 type LivePayload = {
-  WINDOW_START?: string;       // ISO
+  WINDOW_START?: string; // ISO or epoch-ish parseable
   ACTUAL_VOLUME?: number;
   PREDICTED_VOLUME?: number;
   CLOSE?: number | null;
@@ -69,10 +69,16 @@ function defaultPrediction(symbol: string): LatestPrediction {
   };
 }
 
+// Normalize any incoming timestamp to the exact minute ISO string
+function normalizeMinute(ts: string | number | Date): string {
+  const ms = typeof ts === 'string' || typeof ts === 'number' ? Date.parse(ts) : ts.getTime();
+  const floored = Math.floor(ms / 60000) * 60000;
+  return new Date(floored).toISOString(); // e.g. 2025-10-16T14:21:00.000Z
+}
+
 export default function Page() {
   const [symbols, setSymbols] = useState<string[]>([]);
   const [symbol, setSymbol] = useState<string | null>(null);
-
   const [minutes, setMinutes] = useState<number>(120);
 
   const [chartData, setChartData] = useState<AlignmentResponse['points']>([]);
@@ -93,7 +99,7 @@ export default function Page() {
         setSymbols(s);
         setSymbol((prev) => prev ?? (s[0] ?? null));
       } catch (e) {
-        console.error(e);
+        console.error('[INIT] fetchSymbols error', e);
       }
     })();
   }, []);
@@ -104,7 +110,12 @@ export default function Page() {
     (async () => {
       try {
         const aligned = await fetchAlignmentRange(symbol, minutes);
-        setChartData(aligned.points);
+        // Normalize all backfill timestamps to minute to match SSE
+        const normalized = aligned.points.map(p => ({
+          ...p,
+          timestamp: normalizeMinute(p.timestamp),
+        }));
+        setChartData(normalized);
 
         const [ohlcv, pred] = await Promise.all([
           fetchLatestOhlcv(symbol),
@@ -112,8 +123,16 @@ export default function Page() {
         ]);
         setLatestOhlcv(ohlcv);
         setLatestPred(pred);
+
+        console.log('[BACKFILL]', {
+          symbol,
+          minutes,
+          count: normalized.length,
+          head: normalized.slice(0, 2),
+          tail: normalized.slice(-2),
+        });
       } catch (e) {
-        console.error(e);
+        console.error('[BACKFILL] error', e);
       }
     })();
   }, [symbol, minutes]);
@@ -125,22 +144,45 @@ export default function Page() {
   );
   const live = useEventSource<LivePayload>(sseUrl);
 
-  // When SSE arrives, patch the last point and tile values
+  // When SSE arrives, patch the last point and tile values (only update fields that arrived)
   useEffect(() => {
     if (!live || !symbol) return;
 
-    const timestamp = live.WINDOW_START ? String(live.WINDOW_START) : undefined;
-    const actual = typeof live.ACTUAL_VOLUME === 'number' ? live.ACTUAL_VOLUME : null;
-    const predicted = typeof live.PREDICTED_VOLUME === 'number' ? live.PREDICTED_VOLUME : null;
+    const tsRaw = live.WINDOW_START;
+    const timestamp = tsRaw ? normalizeMinute(tsRaw) : undefined;
 
-    if (timestamp) {
+    console.log('[SSE raw]', live);
+    console.log('[SSE ts]', { tsRaw, normalized: timestamp });
+
+    if (!timestamp) return;
+
+    // Build a selective patch (avoid clobbering with nulls)
+    const patch: Partial<{ timestamp: string; actual_volume: number; predicted_volume: number }> = {
+      timestamp,
+    };
+    if (typeof live.ACTUAL_VOLUME === 'number') patch.actual_volume = live.ACTUAL_VOLUME;
+    if (typeof live.PREDICTED_VOLUME === 'number') patch.predicted_volume = live.PREDICTED_VOLUME;
+
+    if (!('actual_volume' in patch) && !('predicted_volume' in patch)) {
+      console.log('[SSE] no actual/predicted fields present, skipping chart patch');
+    } else {
       setChartData((prev) => {
         const next = [...prev];
         const idx = next.findIndex((p) => p.timestamp === timestamp);
-        const newPoint = { timestamp, actual_volume: actual, predicted_volume: predicted };
-        if (idx >= 0) next[idx] = { ...next[idx], ...newPoint };
-        else next.push(newPoint);
-        if (next.length > 360) next.shift(); // ring buffer
+
+        console.log('[SSE patch]', { timestamp, idx, patch, prevTail: prev.slice(-3) });
+
+        if (idx >= 0) {
+          next[idx] = { ...next[idx], ...patch };
+        } else {
+          next.push({ timestamp, actual_volume: null, predicted_volume: null, ...patch });
+        }
+
+        if (next.length > 360) next.shift();
+        // keep sorted defensively
+        next.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+        console.log('[SSE after]', next.slice(-3));
         return next;
       });
     }
@@ -160,6 +202,10 @@ export default function Page() {
     }
 
     if (typeof live.PREDICTED_VOLUME === 'number' || typeof live.MODEL_VERSION === 'string') {
+      console.log('[SSE tile pred]', {
+        PREDICTED_VOLUME: live.PREDICTED_VOLUME,
+        MODEL_VERSION: live.MODEL_VERSION,
+      });
       setLatestPred((prev) => {
         const base = prev ?? defaultPrediction(symbol);
         return {
@@ -223,8 +269,8 @@ export default function Page() {
         </div>
         <Chart
           data={chartData}
-          actualColor="#22c55e"      // green-500
-          predictedColor="#f59e0b"   // amber-500
+          actualColor="#22c55e" // green-500
+          predictedColor="#f59e0b" // amber-500
         />
       </div>
     </main>
