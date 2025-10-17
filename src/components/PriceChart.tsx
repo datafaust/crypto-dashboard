@@ -1,30 +1,21 @@
-// src/components/Chart.tsx
 'use client';
 
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import dayjs from 'dayjs';
 
-export type ChartPoint = {
-  timestamp: string;          // ISO
-  actual_volume: number | null;
-  predicted_volume: number | null;
-};
+export type PriceChartPoint = { timestamp: string; close: number };
 
-type Props = {
-  data: ChartPoint[];
-  height?: number;
-  actualColor?: string;       // e.g., '#06b6d4'
-  predictedColor?: string;    // e.g., '#8b5cf6'
-  syncId?: string;            // 🔗 sync with other charts
-};
-
-export default function Chart({
+export default function PriceChart({
   data,
-  height = 360,
-  actualColor = '#06b6d4',     // cyan-500
-  predictedColor = '#8b5cf6',  // violet-500
+  height = 220,
+  stroke = '#60a5fa', // blue-400
   syncId = 'main-sync',
-}: Props) {
+}: {
+  data: PriceChartPoint[];
+  height?: number;
+  stroke?: string;
+  syncId?: string;
+}) {
   return (
     <div className="w-full h-full">
       <ResponsiveContainer width="100%" height={height}>
@@ -35,14 +26,17 @@ export default function Chart({
             tickFormatter={(v) => dayjs(v).format('HH:mm')}
             minTickGap={24}
           />
-          <YAxis />
+          <YAxis
+            domain={['auto', 'auto']}
+            tickFormatter={(v) => v.toLocaleString()}
+          />
           {/* <Tooltip
             labelFormatter={(label) => dayjs(label).format('YYYY-MM-DD HH:mm')}
-            formatter={(val, name) => [String(val ?? ''), name as string]}
+            formatter={(val) => [Number(val).toLocaleString(), 'Close']}
           /> */}
           <Tooltip
   labelFormatter={(label) => dayjs(label).format('YYYY-MM-DD HH:mm')}
-  formatter={(val, name) => [String(val ?? ''), name as string]}
+            formatter={(val) => [Number(val).toLocaleString(), 'Close']}
   // 👇 style it
   contentStyle={{
     background: 'rgba(17, 24, 39, 0.95)', // bg-gray-900/95
@@ -54,23 +48,13 @@ export default function Chart({
   labelStyle={{ color: '#9ca3af' }}        // text-gray-400
   itemStyle={{ color: '#e5e7eb' }}         // text-gray-200
 />
-          <Legend />
           <Line
             type="monotone"
-            dataKey="actual_volume"
-            name="Actual"
+            dataKey="close"
+            name="Close"
             dot={false}
             strokeWidth={2}
-            stroke={actualColor}
-            isAnimationActive={false}
-          />
-          <Line
-            type="monotone"
-            dataKey="predicted_volume"
-            name="Predicted"
-            dot={false}
-            strokeWidth={2}
-            stroke={predictedColor}
+            stroke={stroke}
             isAnimationActive={false}
           />
         </LineChart>

@@ -1,3 +1,4 @@
+//src/components/TechCard.tsx
 'use client';
 
 import { useState } from 'react';
