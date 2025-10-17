@@ -1,3 +1,4 @@
+//src/components/Chart.tsx
 'use client';
 
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
@@ -35,9 +36,10 @@ export default function Chart({
           />
           <YAxis />
           <Tooltip
-            labelFormatter={(label) => dayjs(label).format('YYYY-MM-DD HH:mm')}
-            formatter={(val, name) => [val as number, name === 'actual_volume' ? 'Actual' : 'Predicted']}
-          />
+  labelFormatter={(label) => dayjs(label).format('YYYY-MM-DD HH:mm')}
+  formatter={(val, name) => [val as number, name]}   // <-- just use the name
+/>
+
           <Legend />
           <Line
             type="monotone"
